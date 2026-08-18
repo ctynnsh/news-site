@@ -18,11 +18,13 @@ SOURCES = [
     ("中新网财经", "http://www.chinanews.com/rss/finance.xml"),
 ]
 
-# 挨个抓取每个源，每个源只取最新 5 条，合并进一个大列表
+# 挨个抓取每个源，合并进一个大列表。中新网财经多取一些（15条），
+# 因为宏观政策类新闻不是每条都有，候选池大一点，才更容易抓到货币政策/汇率这类内容
 articles = []
 for source_name, url in SOURCES:
     feed = feedparser.parse(url)
-    for entry in feed.entries[:5]:
+    count = 15 if source_name == "中新网财经" else 5
+    for entry in feed.entries[:count]:
         articles.append({
             "source": source_name,
             "title": entry.title,
@@ -34,7 +36,25 @@ for i, art in enumerate(articles, start=1):
     print(f"{i}. [{art['source']}] {art['title']}")
 
 
-def pick_top_articles(candidates, count, check_duplicates=False):
+def ask_claude_for_json(prompt, max_tokens):
+    """把 prompt 发给 Claude，把它回复的文字解析成 JSON 数据后返回。"""
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    text = response.content[0].text.strip()
+
+    # 有时 AI 会把 JSON 包在 ```json ... ``` 这样的代码框里，这里把代码框标记去掉
+    if text.startswith("```"):
+        text = text.strip("`")
+        text = text.removeprefix("json").strip()
+
+    return json.loads(text)
+
+
+def pick_top_articles(candidates, count, check_duplicates=False, priority_hint=None):
     """让 Claude 从 candidates 这份候选列表里，挑出最重要的 count 条，返回挑中的那些新闻。"""
     listing = ""
     for i, art in enumerate(candidates, start=1):
@@ -48,6 +68,8 @@ def pick_top_articles(candidates, count, check_duplicates=False):
             "（优先选信息更完整、来源更权威的），绝对不能让同一件事出现两次。\n"
             f"去重之后，从剩下的候选里挑选出最重要的 {count} 条。"
         )
+    if priority_hint:
+        instructions += f"\n{priority_hint}"
 
     prompt = f"""下面是一份新闻标题列表，每条前面是编号。
 
@@ -56,20 +78,7 @@ def pick_top_articles(candidates, count, check_duplicates=False):
 
 只返回一个 JSON 数组，包含选中条目的编号，不要输出任何其他文字。"""
 
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=300,
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    text = response.content[0].text.strip()
-
-    # 有时 AI 会把 JSON 包在 ```json ... ``` 这样的代码框里，这里把代码框标记去掉
-    if text.startswith("```"):
-        text = text.strip("`")
-        text = text.removeprefix("json").strip()
-
-    indices = json.loads(text)
+    indices = ask_claude_for_json(prompt, max_tokens=300)
     return [candidates[i - 1] for i in indices]
 
 
@@ -77,7 +86,14 @@ def pick_top_articles(candidates, count, check_duplicates=False):
 china_articles = [a for a in articles if a["source"] == "中新网财经"]
 other_articles = [a for a in articles if a["source"] != "中新网财经"]
 
-china_selected = pick_top_articles(china_articles, count=3)
+china_selected = pick_top_articles(
+    china_articles,
+    count=3,
+    priority_hint=(
+        "优先选择跟货币政策、央行动向、人民币汇率、财政政策等宏观经济政策相关的新闻；"
+        "如果这类新闻不够 3 条，再用其他重要的财经新闻补足。"
+    ),
+)
 other_selected = pick_top_articles(other_articles, count=7, check_duplicates=True)
 
 selected_articles = china_selected + other_selected
@@ -119,4 +135,47 @@ for art in selected_articles:
     print(f"[{art['source']}] {art['title']}")
     print(f"  正文长度: {len(art['text'])} 字")
     print(f"  开头: {art['text'][:60]}...")
+    print()
+
+# 把这 10 条的标题+正文一次性发给 Claude，生成中文摘要（一次调用生成全部，比调用 10 次更快更省）
+articles_listing = ""
+for i, art in enumerate(selected_articles, start=1):
+    articles_listing += f"{i}. 标题: {art['title']}\n正文:\n{art['text']}\n\n"
+
+summary_prompt = f"""下面是 10 条新闻，每条包含编号、标题和正文。
+
+{articles_listing}
+请为每一条新闻写一段中文摘要，要求：
+- 不管原文是什么语言，摘要都必须用中文写
+- 每条摘要控制在两三句话以内，写成一段话，中间不要换行
+- 摘要内容必须基于正文，不要编造
+
+请严格按下面的格式输出，每条新闻占一行，编号和摘要之间用三个竖线 ||| 分隔，
+不要输出任何其他文字，不要用 markdown：
+1|||摘要文字
+2|||摘要文字
+...依此类推，共 10 行"""
+
+summary_response = client.messages.create(
+    model="claude-haiku-4-5-20251001",
+    max_tokens=1500,
+    messages=[{"role": "user", "content": summary_prompt}],
+)
+summary_text = summary_response.content[0].text.strip()
+
+summary_by_index = {}
+for line in summary_text.split("\n"):
+    line = line.strip()
+    if "|||" not in line:
+        continue
+    number_part, summary_part = line.split("|||", 1)
+    summary_by_index[int(number_part.strip())] = summary_part.strip()
+
+for i, art in enumerate(selected_articles, start=1):
+    art["summary"] = summary_by_index[i]
+
+print("\n最终摘要:\n")
+for art in selected_articles:
+    print(f"[{art['source']}] {art['title']}")
+    print(art["summary"])
     print()
