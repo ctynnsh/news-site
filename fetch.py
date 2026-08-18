@@ -1,11 +1,18 @@
 import json
 import os
+import random
+import socket
+import time
 from datetime import datetime
 import feedparser
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from anthropic import Anthropic
+
+# feedparser 内部没有单独的超时设置，靠这一行给所有网络请求定一个上限（秒），
+# 避免某个网站卡住不响应时，程序一直傻等
+socket.setdefaulttimeout(15)
 
 # 从 .env 文件里读取 ANTHROPIC_API_KEY
 load_dotenv()
@@ -19,18 +26,33 @@ SOURCES = [
     ("中新网财经", "http://www.chinanews.com/rss/finance.xml"),
 ]
 
+def get_published_time(entry):
+    """把 RSS 里的发布时间统一转换成标准格式；如果解析不了，就用原始文字。"""
+    if entry.get("published_parsed"):
+        return datetime(*entry.published_parsed[:6]).isoformat()
+    return entry.get("published", "")
+
+
 # 挨个抓取每个源，合并进一个大列表。中新网财经多取一些（15条），
 # 因为宏观政策类新闻不是每条都有，候选池大一点，才更容易抓到货币政策/汇率这类内容
+# 单个源抓取失败（网络超时等）不影响其他源，打印提示后跳过继续
 articles = []
 for source_name, url in SOURCES:
-    feed = feedparser.parse(url)
-    count = 15 if source_name == "中新网财经" else 5
-    for entry in feed.entries[:count]:
-        articles.append({
-            "source": source_name,
-            "title": entry.title,
-            "link": entry.link,
-        })
+    try:
+        feed = feedparser.parse(url)
+        count = 15 if source_name == "中新网财经" else 5
+        for entry in feed.entries[:count]:
+            # RSS 自带的简介，先清掉里面可能混着的 HTML 标签，留着当"抓正文失败"时的备用素材
+            rss_summary = BeautifulSoup(entry.get("summary", ""), "html.parser").get_text().strip()
+            articles.append({
+                "source": source_name,
+                "title": entry.title,
+                "link": entry.link,
+                "published": get_published_time(entry),
+                "rss_summary": rss_summary,
+            })
+    except Exception as e:
+        print(f"抓取信源失败，跳过: [{source_name}] ({e})")
 
 print(f"一共抓到 {len(articles)} 条新闻:\n")
 for i, art in enumerate(articles, start=1):
@@ -55,20 +77,32 @@ def ask_claude_for_json(prompt, max_tokens):
     return json.loads(text)
 
 
-def pick_top_articles(candidates, count, check_duplicates=False, priority_hint=None):
-    """让 Claude 从 candidates 这份候选列表里，挑出最重要的 count 条，返回挑中的那些新闻。"""
+def pick_top_articles(candidates, count=None, count_range=None, check_duplicates=False, priority_hint=None):
+    """让 Claude 从 candidates 这份候选列表里挑新闻，返回挑中的那些。
+    count：挑固定数量；count_range：挑一个区间内的数量，比如 (2, 5)。两个参数二选一。"""
     listing = ""
     for i, art in enumerate(candidates, start=1):
         listing += f"{i}. [{art['source']}] {art['title']}\n"
 
-    instructions = f"请从中挑选出最重要的 {count} 条。"
+    if count_range:
+        min_count, max_count = count_range
+        count_instruction = (
+            f"挑选出最重要的新闻，数量控制在 {min_count} 到 {max_count} 条之间——"
+            "根据实际重要性判断，不要为了凑数选进不够重要的新闻，但也不能少于下限"
+        )
+    else:
+        count_instruction = f"挑选出最重要的 {count} 条"
+
     if check_duplicates:
         instructions = (
             "请先检查列表里是否有多条报道的是同一件事——即使标题文字不完全一样，"
             "只要说的是同一个事件，也算重复。这种情况下只能选其中一条"
             "（优先选信息更完整、来源更权威的），绝对不能让同一件事出现两次。\n"
-            f"去重之后，从剩下的候选里挑选出最重要的 {count} 条。"
+            f"去重之后，请{count_instruction}。"
         )
+    else:
+        instructions = f"请{count_instruction}。"
+
     if priority_hint:
         instructions += f"\n{priority_hint}"
 
@@ -80,22 +114,29 @@ def pick_top_articles(candidates, count, check_duplicates=False, priority_hint=N
 只返回一个 JSON 数组，包含选中条目的编号，不要输出任何其他文字。"""
 
     indices = ask_claude_for_json(prompt, max_tokens=300)
-    return [candidates[i - 1] for i in indices]
+    selected = [candidates[i - 1] for i in indices]
+
+    if count_range:
+        selected = selected[:count_range[1]]  # 防止 Claude 没听话选太多，做个保险
+
+    return selected
 
 
-# 把中新网财经单独拎出来,保证它一定能选到 3 条,不会被其他源的新闻挤掉
+# 把中新网财经单独拎出来，挑 2~5 条最重要的（不强求固定数量），
+# 剩下的名额再让其他三个源去挑
 china_articles = [a for a in articles if a["source"] == "中新网财经"]
 other_articles = [a for a in articles if a["source"] != "中新网财经"]
 
 china_selected = pick_top_articles(
     china_articles,
-    count=3,
+    count_range=(2, 5),
     priority_hint=(
         "优先选择跟货币政策、央行动向、人民币汇率、财政政策等宏观经济政策相关的新闻；"
-        "如果这类新闻不够 3 条，再用其他重要的财经新闻补足。"
+        "如果这类新闻数量不够，再用其他重要的财经新闻补足到下限。"
     ),
 )
-other_selected = pick_top_articles(other_articles, count=7, check_duplicates=True)
+remaining_count = 10 - len(china_selected)
+other_selected = pick_top_articles(other_articles, count=remaining_count, check_duplicates=True)
 
 selected_articles = china_selected + other_selected
 
@@ -123,13 +164,21 @@ def extract_article_text(soup):
     return "\n".join(p.get_text().strip() for p in paragraphs if p.get_text().strip())
 
 
-# 给选中的这 10 条，逐条抓取正文
+# 给选中的这 10 条，逐条抓取正文。单条抓取失败不影响其他条，
+# 抓不到（或抓到空的）就退回用 RSS 自带的简介凑合用；每条之间歇 1~2 秒，别太快地反复访问同一网站
 request_headers = {"User-Agent": "Mozilla/5.0"}
 for art in selected_articles:
-    page = requests.get(art["link"], headers=request_headers, timeout=10)
-    page.encoding = page.apparent_encoding  # 自动识别网页编码，避免中文乱码
-    soup = BeautifulSoup(page.text, "html.parser")
-    art["text"] = extract_article_text(soup)
+    try:
+        page = requests.get(art["link"], headers=request_headers, timeout=10)
+        page.encoding = page.apparent_encoding  # 自动识别网页编码，避免中文乱码
+        soup = BeautifulSoup(page.text, "html.parser")
+        text = extract_article_text(soup)
+        art["text"] = text if text else art["rss_summary"]
+    except Exception as e:
+        print(f"  抓正文失败，改用 RSS 简介代替: [{art['source']}] {art['title']} ({e})")
+        art["text"] = art["rss_summary"]
+
+    time.sleep(random.uniform(1, 2))
 
 print("\n抓正文结果预览:\n")
 for art in selected_articles:
@@ -193,6 +242,7 @@ output = {
             "source": art["source"],
             "title": art["title_zh"],
             "link": art["link"],
+            "published": art["published"],
             "summary": art["summary"],
         }
         for art in selected_articles
