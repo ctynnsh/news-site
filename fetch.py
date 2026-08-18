@@ -202,4 +202,11 @@ output = {
 with open("news.json", "w", encoding="utf-8") as f:
     json.dump(output, f, ensure_ascii=False, indent=2)
 
-print("已保存到 news.json")
+# 另外按日期存一份存档，比如 archive/2026-08-17.json
+os.makedirs("archive", exist_ok=True)
+today = datetime.now().strftime("%Y-%m-%d")
+archive_path = f"archive/{today}.json"
+with open(archive_path, "w", encoding="utf-8") as f:
+    json.dump(output, f, ensure_ascii=False, indent=2)
+
+print(f"已保存到 news.json 和 {archive_path}")
