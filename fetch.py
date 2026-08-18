@@ -1,6 +1,8 @@
 import json
 import os
 import feedparser
+import requests
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from anthropic import Anthropic
 
@@ -83,3 +85,38 @@ selected_articles = china_selected + other_selected
 print(f"\nClaude 挑出的 {len(selected_articles)} 条:\n")
 for art in selected_articles:
     print(f"- [{art['source']}] {art['title']}")
+
+def extract_article_text(soup):
+    """从网页里挑出正文段落。优先找 <article> 标签；如果里面没有正文
+    （有些网站的 <article> 是空壳，正文在别的容器里），就退而求其次，
+    在整个网页里找"直接包含最多 <p> 段落"的那个容器，通常那就是正文区域。"""
+    article_tag = soup.find("article")
+    paragraphs = article_tag.find_all("p") if article_tag else []
+
+    if not paragraphs:
+        best_container = None
+        best_count = 0
+        for container in soup.find_all(["div", "section"]):
+            count = len(container.find_all("p", recursive=False))
+            if count > best_count:
+                best_container = container
+                best_count = count
+        paragraphs = best_container.find_all("p") if best_container else soup.find_all("p")
+
+    return "\n".join(p.get_text().strip() for p in paragraphs if p.get_text().strip())
+
+
+# 给选中的这 10 条，逐条抓取正文
+request_headers = {"User-Agent": "Mozilla/5.0"}
+for art in selected_articles:
+    page = requests.get(art["link"], headers=request_headers, timeout=10)
+    page.encoding = page.apparent_encoding  # 自动识别网页编码，避免中文乱码
+    soup = BeautifulSoup(page.text, "html.parser")
+    art["text"] = extract_article_text(soup)
+
+print("\n抓正文结果预览:\n")
+for art in selected_articles:
+    print(f"[{art['source']}] {art['title']}")
+    print(f"  正文长度: {len(art['text'])} 字")
+    print(f"  开头: {art['text'][:60]}...")
+    print()
