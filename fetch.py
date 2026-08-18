@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import datetime
 import feedparser
 import requests
 from bs4 import BeautifulSoup
@@ -145,15 +146,15 @@ for i, art in enumerate(selected_articles, start=1):
 summary_prompt = f"""下面是 10 条新闻，每条包含编号、标题和正文。
 
 {articles_listing}
-请为每一条新闻写一段中文摘要，要求：
-- 不管原文是什么语言，摘要都必须用中文写
-- 每条摘要控制在两三句话以内，写成一段话，中间不要换行
+请为每一条新闻提供一个中文标题和一段中文摘要，要求：
+- 标题：如果原标题本来就是中文，直接沿用（可以稍微精简）；如果是英文，翻译成简洁准确的中文标题
+- 摘要：不管原文是什么语言，都必须用中文写，控制在两三句话以内，写成一段话，中间不要换行
 - 摘要内容必须基于正文，不要编造
 
-请严格按下面的格式输出，每条新闻占一行，编号和摘要之间用三个竖线 ||| 分隔，
+请严格按下面的格式输出，每条新闻占一行，编号、中文标题、摘要之间用三个竖线 ||| 分隔，
 不要输出任何其他文字，不要用 markdown：
-1|||摘要文字
-2|||摘要文字
+1|||中文标题|||摘要文字
+2|||中文标题|||摘要文字
 ...依此类推，共 10 行"""
 
 summary_response = client.messages.create(
@@ -168,14 +169,37 @@ for line in summary_text.split("\n"):
     line = line.strip()
     if "|||" not in line:
         continue
-    number_part, summary_part = line.split("|||", 1)
-    summary_by_index[int(number_part.strip())] = summary_part.strip()
+    number_part, title_part, summary_part = line.split("|||", 2)
+    summary_by_index[int(number_part.strip())] = {
+        "title": title_part.strip(),
+        "summary": summary_part.strip(),
+    }
 
 for i, art in enumerate(selected_articles, start=1):
-    art["summary"] = summary_by_index[i]
+    art["title_zh"] = summary_by_index[i]["title"]
+    art["summary"] = summary_by_index[i]["summary"]
 
 print("\n最终摘要:\n")
 for art in selected_articles:
-    print(f"[{art['source']}] {art['title']}")
+    print(f"[{art['source']}] {art['title_zh']}")
     print(art["summary"])
     print()
+
+# 整理成 JSON，存进 news.json
+output = {
+    "generated_at": datetime.now().isoformat(),
+    "articles": [
+        {
+            "source": art["source"],
+            "title": art["title_zh"],
+            "link": art["link"],
+            "summary": art["summary"],
+        }
+        for art in selected_articles
+    ],
+}
+
+with open("news.json", "w", encoding="utf-8") as f:
+    json.dump(output, f, ensure_ascii=False, indent=2)
+
+print("已保存到 news.json")
