@@ -268,3 +268,66 @@ body {
   color: var(--ink-soft);
   line-height: 1.8;
 }
+
+/* ---- 大一点的屏幕：把这一栏适当放宽、字号间距跟着放大一点，
+   不做多栏布局，还是一份居中排版的简报，只是纸变大了 ---- */
+@media (min-width: 640px) {
+  body {
+    padding-top: 64px;
+  }
+  .rail {
+    max-width: 520px;
+  }
+  .date {
+    font-size: 30px;
+  }
+  .headline {
+    font-size: 18px;
+  }
+  .list {
+    gap: 40px;
+  }
+}
+
+@media (min-width: 1024px) {
+  body {
+    padding-top: 88px;
+  }
+  .rail {
+    max-width: 600px;
+  }
+}
+
+/* ---- 特别宽的屏幕：再宽一点，两侧加两条很淡的竖线，
+   像折页的折痕，安静地框住内容区，不是装饰画 ---- */
+@media (min-width: 1400px) {
+  .rail {
+    max-width: 680px;
+    position: relative;
+  }
+  .rail::before,
+  .rail::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--line);
+  }
+  .rail::before {
+    left: -40px;
+  }
+  .rail::after {
+    right: -40px;
+  }
+}
+
+/* ---- 只有真正带鼠标的设备才会看到这个悬停效果，触屏不受影响 ---- */
+@media (hover: hover) and (pointer: fine) {
+  .headline {
+    transition: color 200ms ease;
+  }
+  .item summary:hover .headline {
+    color: var(--accent);
+  }
+}
