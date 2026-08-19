@@ -1,3 +1,4 @@
 .env
 venv/
 news.json
+__pycache__/
