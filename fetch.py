@@ -1,9 +1,11 @@
 import json
 import os
 import random
+import re
 import socket
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
+from difflib import SequenceMatcher
 import feedparser
 import requests
 from bs4 import BeautifulSoup
@@ -18,12 +20,15 @@ socket.setdefaulttimeout(15)
 load_dotenv()
 client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
-# 五个新闻源：(显示名字, RSS 地址)
+# 新闻源：(显示名字, RSS 地址)
+# 中新网财经 + 中新网国内 两个算"中国候选池"：前者管宏观经济政策，后者管重大时政外事
+CHINA_SOURCE_NAMES = ("中新网财经", "中新网国内")
 SOURCES = [
     ("BBC World", "https://feeds.bbci.co.uk/news/world/rss.xml"),
     ("联合国新闻", "https://news.un.org/feed/subscribe/zh/news/all/rss.xml"),
     ("The Guardian World", "https://www.theguardian.com/world/rss"),
     ("中新网财经", "http://www.chinanews.com/rss/finance.xml"),
+    ("中新网国内", "https://www.chinanews.com.cn/rss/china.xml"),
 ]
 
 def get_published_time(entry):
@@ -33,14 +38,14 @@ def get_published_time(entry):
     return entry.get("published", "")
 
 
-# 挨个抓取每个源，合并进一个大列表。中新网财经多取一些（15条），
-# 因为宏观政策类新闻不是每条都有，候选池大一点，才更容易抓到货币政策/汇率这类内容
+# 挨个抓取每个源，合并进一个大列表。中国候选池两个源多取一些（15条），
+# 因为宏观政策/重大时政新闻不是每条都有，候选池大一点，才更容易抓到合适的内容
 # 单个源抓取失败（网络超时等）不影响其他源，打印提示后跳过继续
 articles = []
 for source_name, url in SOURCES:
     try:
         feed = feedparser.parse(url)
-        count = 15 if source_name == "中新网财经" else 5
+        count = 15 if source_name in CHINA_SOURCE_NAMES else 5
         for entry in feed.entries[:count]:
             # RSS 自带的简介，先清掉里面可能混着的 HTML 标签，留着当"抓正文失败"时的备用素材
             rss_summary = BeautifulSoup(entry.get("summary", ""), "html.parser").get_text().strip()
@@ -55,6 +60,56 @@ for source_name, url in SOURCES:
         print(f"抓取信源失败，跳过: [{source_name}] ({e})")
 
 print(f"一共抓到 {len(articles)} 条新闻:\n")
+
+
+def title_similarity(title_a, title_b):
+    """算两个标题有多像，返回 0~1 之间的数字，1 表示完全一样。不调用 AI，纯算法比对文字。"""
+    return SequenceMatcher(None, title_a, title_b).ratio()
+
+
+SIMILARITY_THRESHOLD = 0.6
+
+
+def dedupe_similar_titles(candidates):
+    """同一个来源里，如果标题高度相似（很可能是同一件事被反复更新报道，
+    比如"XX举行会谈"和"XX会谈"），只保留先抓到的那条。"""
+    kept = []
+    for art in candidates:
+        is_dup = any(
+            art["source"] == other["source"] and title_similarity(art["title"], other["title"]) > SIMILARITY_THRESHOLD
+            for other in kept
+        )
+        if not is_dup:
+            kept.append(art)
+    return kept
+
+
+def load_recent_archive_titles(days=3):
+    """读取最近几天的存档，收集已经发布过的标题，用来避免连着好几天报道同一件事。"""
+    titles = []
+    today = datetime.now().date()
+    for i in range(1, days + 1):
+        date_str = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        path = f"archive/{date_str}.json"
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            titles.extend(a["title"] for a in data["articles"])
+    return titles
+
+
+def is_already_covered(title, recent_titles):
+    return any(title_similarity(title, prev_title) > SIMILARITY_THRESHOLD for prev_title in recent_titles)
+
+
+recent_titles = load_recent_archive_titles(days=3)
+before_count = len(articles)
+articles = [a for a in articles if not is_already_covered(a["title"], recent_titles)]
+if before_count != len(articles):
+    print(f"（排除了 {before_count - len(articles)} 条最近几天报道过的重复新闻）")
+
+articles = dedupe_similar_titles(articles)
+
 for i, art in enumerate(articles, start=1):
     print(f"{i}. [{art['source']}] {art['title']}")
 
@@ -122,23 +177,48 @@ def pick_top_articles(candidates, count=None, count_range=None, check_duplicates
     return selected
 
 
-# 把中新网财经单独拎出来，挑 2~5 条最重要的（不强求固定数量），
-# 剩下的名额再让其他三个源去挑
-china_articles = [a for a in articles if a["source"] == "中新网财经"]
-other_articles = [a for a in articles if a["source"] != "中新网财经"]
+# 把中国候选池（财经+国内两个源）单独拎出来，挑 2~5 条最重要的（不强求固定数量），
+# 剩下的名额再让其他源去挑
+china_articles = [a for a in articles if a["source"] in CHINA_SOURCE_NAMES]
+other_articles = [a for a in articles if a["source"] not in CHINA_SOURCE_NAMES]
 
 china_selected = pick_top_articles(
     china_articles,
     count_range=(2, 5),
+    check_duplicates=True,
     priority_hint=(
-        "优先选择跟货币政策、央行动向、人民币汇率、财政政策等宏观经济政策相关的新闻；"
-        "如果这类新闻数量不够，再用其他重要的财经新闻补足到下限。"
+        "优先选择以下两类新闻，两类同等重要，不要偏废其中一类：\n"
+        "1) 货币政策、央行动向、人民币汇率、财政政策等宏观经济政策新闻；\n"
+        "2) 国家领导人重大外事活动、国事访问、重要政治新闻（比如高层会晤、国家追悼活动等）。\n"
+        "如果这两类新闻数量不够，再用其他重要新闻补足到下限。"
     ),
 )
 remaining_count = 10 - len(china_selected)
 other_selected = pick_top_articles(other_articles, count=remaining_count, check_duplicates=True)
 
-selected_articles = china_selected + other_selected
+combined_selected = china_selected + other_selected
+
+
+def remove_cross_duplicates(articles):
+    """china_selected 和 other_selected 是分开选的，各自去重不知道对方选了什么。
+    这里把两边合并后的最终名单再整体检查一遍，防止同一件事跨来源重复出现。"""
+    listing = ""
+    for i, art in enumerate(articles, start=1):
+        listing += f"{i}. [{art['source']}] {art['title']}\n"
+
+    prompt = f"""下面是一份新闻标题列表，每条前面是编号。
+
+{listing}
+请检查列表里是否有多条报道的是同一件事——即使来源不同、标题文字不完全一样，
+只要说的是同一个事件，也算重复。这种情况下只保留其中一条（优先选信息更完整、来源更权威的）。
+
+请返回一个 JSON 数组，包含去重后应该保留的条目编号，按原来的顺序排列，不要输出任何其他文字。"""
+
+    indices = ask_claude_for_json(prompt, max_tokens=300)
+    return [articles[i - 1] for i in indices]
+
+
+selected_articles = remove_cross_duplicates(combined_selected)
 
 print(f"\nClaude 挑出的 {len(selected_articles)} 条:\n")
 for art in selected_articles:
@@ -198,7 +278,11 @@ summary_prompt = f"""下面是 10 条新闻，每条包含编号、标题和正�
 请为每一条新闻提供一个中文标题和一段中文摘要，要求：
 - 标题：如果原标题本来就是中文，直接沿用（可以稍微精简）；如果是英文，翻译成简洁准确的中文标题
 - 摘要：不管原文是什么语言，都必须用中文写，控制在两三句话以内，写成一段话，中间不要换行
-- 摘要内容必须基于正文，不要编造
+- 摘要内容必须基于正文，不要编造，这一条最重要：宁可写得模糊，也不能编造正文里没有的具体信息（日期、数字、人名都算）
+- 如果正文明确给出了具体日期，摘要里要写出完整的时间（比如"2026年8月17日"），不能用
+  "近日、日前、最近、上周、本月"这类相对时间词，读者不知道你写摘要那天是哪天；
+  但如果正文没有给出具体日期（比如只说"即将到期""不久前"这种模糊说法），
+  就如实按正文的模糊程度来写，绝对不能为了凑一个"完整日期"而编造一个正文没提过的具体日期
 
 请严格按下面的格式输出，每条新闻占一行，编号、中文标题、摘要之间用三个竖线 ||| 分隔，
 不要输出任何其他文字，不要用 markdown：
@@ -228,9 +312,70 @@ for i, art in enumerate(selected_articles, start=1):
     art["title_zh"] = summary_by_index[i]["title"]
     art["summary"] = summary_by_index[i]["summary"]
 
+
+# 程序化兜底：提示词里提了要求，但 AI 不一定每次都听话，
+# 生成完之后用代码扫一遍常见问题，扫到就单独把这一条打回去重新生成
+BANNED_TIME_WORDS = ["近日", "日前", "最近", "上周", "本月"]
+NON_CHINESE_SCRIPT_PATTERN = re.compile(r"[가-힣぀-ヿ]")  # 韩文、日文假名的字符范围
+
+
+def find_summary_issues(text):
+    """检查摘要文字有没有已知问题，返回问题描述列表（没问题就是空列表）。"""
+    issues = []
+    banned = [w for w in BANNED_TIME_WORDS if w in text]
+    if banned:
+        issues.append(f'出现了相对时间词"{"、".join(banned)}"，必须改成完整的年份+月份/日期')
+    if NON_CHINESE_SCRIPT_PATTERN.search(text):
+        issues.append("人名或专有名词里疑似混入了韩文/日文字符，必须改成正确的中文")
+    return issues
+
+
+def regenerate_summary(art, issues):
+    """针对单条新闻重新生成标题+摘要，明确指出这次要修正哪些问题。"""
+    issues_text = "\n".join(f"  - {issue}" for issue in issues)
+    prompt = f"""标题: {art['title']}
+正文:
+{art['text']}
+
+请重新为这条新闻写一个中文标题和一段中文摘要，要求：
+- 标题：如果原标题本来就是中文，直接沿用；如果是英文，翻译成简洁准确的中文标题
+- 摘要：用中文写，控制在两三句话以内，写成一段话，中间不要换行，内容必须基于正文，不要编造
+- 涉及时间：正文明确给了具体日期才写完整日期；正文没给具体日期的话，就按正文的模糊程度如实写，
+  绝对不能为了凑一个"完整日期"而编造正文没提过的具体日期
+- 你刚才写的版本有以下问题，这次必须修正：
+{issues_text}
+
+请严格按下面的格式输出，不要输出任何其他文字：
+中文标题|||摘要文字"""
+
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=300,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = response.content[0].text.strip()
+    title_part, summary_part = text.split("|||", 1)
+    return title_part.strip(), summary_part.strip()
+
+
+for art in selected_articles:
+    issues = find_summary_issues(art["title_zh"] + art["summary"])
+    attempts = 0
+    while issues and attempts < 2:
+        print(f"  摘要有问题 {issues}，重新生成: [{art['source']}] {art['title']}")
+        art["title_zh"], art["summary"] = regenerate_summary(art, issues)
+        issues = find_summary_issues(art["title_zh"] + art["summary"])
+        attempts += 1
+    if issues:
+        print(f"  警告：重试 2 次后仍有问题 {issues}，先保留这版: [{art['source']}] {art['title']}")
+
+# 把来源拼进摘要末尾，方便网页直接显示，不用额外拼接
+for art in selected_articles:
+    art["summary"] = f"{art['summary']}【{art['source']}】"
+
 print("\n最终摘要:\n")
 for art in selected_articles:
-    print(f"[{art['source']}] {art['title_zh']}")
+    print(art["title_zh"])
     print(art["summary"])
     print()
 
