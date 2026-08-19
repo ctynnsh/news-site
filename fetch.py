@@ -404,4 +404,19 @@ archive_path = f"archive/{today}.json"
 with open(archive_path, "w", encoding="utf-8") as f:
     json.dump(output, f, ensure_ascii=False, indent=2)
 
+# 生成一份存档清单 archive/index.json，网页的 archive.html 靠读这个知道有哪些历史日期
+# （浏览器里的 JS 没法直接列出文件夹里有什么文件，所以要靠 Python 这边生成清单）
+archive_files = sorted(
+    f for f in os.listdir("archive") if re.fullmatch(r"\d{4}-\d{2}-\d{2}\.json", f)
+)
+index_entries = []
+for filename in archive_files:
+    with open(f"archive/{filename}", encoding="utf-8") as f:
+        day_data = json.load(f)
+    index_entries.append({"date": filename.removesuffix(".json"), "count": len(day_data["articles"])})
+index_entries.sort(key=lambda e: e["date"], reverse=True)
+
+with open("archive/index.json", "w", encoding="utf-8") as f:
+    json.dump({"dates": index_entries}, f, ensure_ascii=False, indent=2)
+
 print(f"已保存到 news.json 和 {archive_path}")

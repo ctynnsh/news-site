@@ -1,0 +1,270 @@
+:root {
+  --bg: #faf8f9;
+  --surface: #f1eced;
+  --ink: #2a2229;
+  --ink-soft: #8b8288;
+  --ink-faint: #b3abb0;
+  --line: #e7e1e4;
+  --accent: #8b5a6b;
+  --accent-soft: #f1e4e8;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1619;
+    --surface: #2a2226;
+    --ink: #f0eaec;
+    --ink-soft: #9c939a;
+    --ink-faint: #665c61;
+    --line: #362c31;
+    --accent: #c98ba0;
+    --accent-soft: #3a2830;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+  margin: 0;
+  padding: 48px 20px 96px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.rail {
+  width: 100%;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- masthead ---- */
+.masthead {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 44px;
+}
+
+.brand {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--accent);
+  text-transform: uppercase;
+  margin: 0 0 4px;
+}
+
+.date {
+  font-family: "Noto Serif SC", "Songti SC", "STSong", serif;
+  font-weight: 600;
+  font-size: 26px;
+  letter-spacing: 0.01em;
+  text-wrap: balance;
+}
+
+.tagline {
+  font-size: 13.5px;
+  color: var(--ink-soft);
+  margin: 0;
+}
+
+/* ---- back link (used on index.html?date=... and archive.html) ---- */
+.back-link {
+  font-size: 13px;
+  color: var(--ink-soft);
+  text-decoration: none;
+  margin-bottom: 28px;
+  display: inline-block;
+}
+.back-link:hover {
+  color: var(--accent);
+}
+.back-link[hidden] {
+  display: none;
+}
+
+/* ---- article list ---- */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 36px;
+}
+
+.item {
+  display: flex;
+  flex-direction: column;
+}
+
+.item summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  -webkit-tap-highlight-color: transparent;
+}
+.item summary::-webkit-details-marker {
+  display: none;
+}
+
+.tag {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  background: var(--surface);
+  border-radius: 999px;
+  padding: 3px 10px;
+  letter-spacing: 0.03em;
+  transform: translateY(-1px);
+}
+.tag.china {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.headline {
+  font-family: "Noto Serif SC", "Songti SC", "STSong", serif;
+  font-weight: 500;
+  font-size: 17px;
+  line-height: 1.55;
+  flex: 1;
+}
+
+.chev {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  margin-top: 6px;
+  border-right: 1.5px solid var(--accent);
+  border-bottom: 1.5px solid var(--accent);
+  transform: rotate(-45deg);
+  transition: transform 320ms cubic-bezier(0.34, 1.3, 0.64, 1);
+}
+.item[open] .chev {
+  transform: rotate(45deg);
+}
+
+.detail {
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 360ms cubic-bezier(0.34, 1.15, 0.64, 1);
+}
+.item[open] .detail {
+  grid-template-rows: 1fr;
+}
+.detail-inner {
+  min-height: 0;
+}
+
+.summary-text {
+  font-size: 14.5px;
+  line-height: 1.85;
+  color: var(--ink);
+  padding-top: 16px;
+  margin: 0;
+  opacity: 0;
+  transition: opacity 280ms ease 80ms;
+}
+.item[open] .summary-text {
+  opacity: 1;
+}
+
+.meta-row {
+  padding-top: 14px;
+  font-size: 12.5px;
+}
+
+.read-link {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+.read-link:hover {
+  border-bottom-color: var(--accent);
+}
+
+.read-link:focus-visible,
+.item summary:focus-visible,
+.back-link:focus-visible,
+.archive-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+/* ---- footer ---- */
+.site-footer {
+  margin-top: 56px;
+  padding-top: 28px;
+  border-top: 1px solid var(--line);
+  text-align: center;
+}
+.site-footer a {
+  color: var(--ink-soft);
+  text-decoration: none;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+.site-footer a:hover {
+  color: var(--accent);
+}
+
+/* ---- archive.html ---- */
+.archive-title {
+  font-family: "Noto Serif SC", "Songti SC", "STSong", serif;
+  font-weight: 600;
+  font-size: 22px;
+  margin: 0 0 40px;
+}
+
+.archive-group + .archive-group {
+  margin-top: 32px;
+}
+
+.archive-month {
+  font-size: 12px;
+  color: var(--ink-faint);
+  letter-spacing: 0.08em;
+  margin: 0 0 14px;
+}
+
+.archive-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.archive-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+  text-decoration: none;
+  color: var(--ink);
+}
+
+.archive-date {
+  font-family: "Noto Serif SC", "Songti SC", "STSong", serif;
+  font-size: 15.5px;
+}
+
+.archive-count {
+  font-size: 12.5px;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- shared ---- */
+.error-note {
+  font-size: 13.5px;
+  color: var(--ink-soft);
+  line-height: 1.8;
+}
