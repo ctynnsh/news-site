@@ -88,14 +88,22 @@ async function loadIndexPage() {
 
   const params = new URLSearchParams(location.search);
   const dateParam = params.get("date");
-  const dataUrl = dateParam ? `archive/${dateParam}.json` : "news.json";
 
   try {
-    const res = await fetch(dataUrl);
-    if (!res.ok) throw new Error(`读取 ${dataUrl} 失败：${res.status}`);
+    // 没指定日期就看"最新是哪天"：先读存档清单，取清单里排第一的日期
+    let issueDate = dateParam;
+    if (!issueDate) {
+      const indexRes = await fetch("archive/index.json");
+      if (!indexRes.ok) throw new Error(`读取 archive/index.json 失败：${indexRes.status}`);
+      const indexData = await indexRes.json();
+      if (indexData.dates.length === 0) throw new Error("存档是空的，还没有任何一天的新闻");
+      issueDate = indexData.dates[0].date;
+    }
+
+    const res = await fetch(`archive/${issueDate}.json`);
+    if (!res.ok) throw new Error(`读取 archive/${issueDate}.json 失败：${res.status}`);
     const data = await res.json();
 
-    const issueDate = dateParam || data.generated_at.slice(0, 10);
     dateEl.textContent = formatDateCN(issueDate);
     greetingEl.textContent = pickGreeting(issueDate);
 
@@ -114,7 +122,7 @@ async function loadIndexPage() {
     p.className = "error-note";
     p.textContent = dateParam
       ? "没找到这一天的存档，可能日期不对，或者这天还没有新闻。"
-      : "没读到 news.json，先确认这个文件在不在网站根目录下。";
+      : "没读到存档数据，先确认 archive/index.json 和对应日期的文件在不在。";
     list.appendChild(p);
   }
 }

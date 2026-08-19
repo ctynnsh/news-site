@@ -379,7 +379,8 @@ for art in selected_articles:
     print(art["summary"])
     print()
 
-# 整理成 JSON，存进 news.json
+# 整理成 JSON，按日期存一份存档，比如 archive/2026-08-17.json
+# （网页首页会自动读 archive/index.json 找出最新一天，不用再单独存一份 news.json）
 output = {
     "generated_at": datetime.now().isoformat(),
     "articles": [
@@ -394,10 +395,6 @@ output = {
     ],
 }
 
-with open("news.json", "w", encoding="utf-8") as f:
-    json.dump(output, f, ensure_ascii=False, indent=2)
-
-# 另外按日期存一份存档，比如 archive/2026-08-17.json
 os.makedirs("archive", exist_ok=True)
 today = datetime.now().strftime("%Y-%m-%d")
 archive_path = f"archive/{today}.json"
@@ -419,4 +416,4 @@ index_entries.sort(key=lambda e: e["date"], reverse=True)
 with open("archive/index.json", "w", encoding="utf-8") as f:
     json.dump({"dates": index_entries}, f, ensure_ascii=False, indent=2)
 
-print(f"已保存到 news.json 和 {archive_path}")
+print(f"已保存到 {archive_path}，并更新了 archive/index.json")
